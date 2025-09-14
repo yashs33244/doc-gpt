@@ -204,7 +204,7 @@ export class DoctorGPTWorkflow {
 
     /**
      * Document Retrieval Node
-     * Retrieves relevant documents from vector database
+     * Retrieves relevant documents from vector database and uploaded documents
      */
     private async documentRetrievalNode(state: DoctorGPTState): Promise<Partial<DoctorGPTState>> {
         console.log('Executing document retrieval node');
@@ -214,12 +214,31 @@ export class DoctorGPTWorkflow {
                 throw new Error('Processed query not available');
             }
 
-            // This would implement vector search using pgvector
-            // For now, we'll simulate the retrieval
-            const retrievedDocuments = await this.performVectorSearch(
-                state.processedQuery.enhancedQuery,
-                state.userId
-            );
+            let retrievedDocuments = [];
+
+            // First, check if there are uploaded documents to use
+            if (state.uploadedDocuments && state.uploadedDocuments.length > 0) {
+                console.log(`Using ${state.uploadedDocuments.length} uploaded documents`);
+                retrievedDocuments = state.uploadedDocuments.map(doc => ({
+                    id: doc.id,
+                    fileName: doc.fileName,
+                    content: doc.content || doc.extractedText,
+                    source: 'uploaded',
+                    relevanceScore: 1.0, // High relevance since user specifically uploaded these
+                    metadata: {
+                        fileType: doc.fileType || 'unknown',
+                        reportType: doc.reportType || 'other',
+                        processingStatus: doc.processingStatus || 'COMPLETED'
+                    }
+                }));
+            } else {
+                // Fallback to vector search if no uploaded documents
+                console.log('No uploaded documents, performing vector search');
+                retrievedDocuments = await this.performVectorSearch(
+                    state.processedQuery.enhancedQuery,
+                    state.userId
+                );
+            }
 
             return {
                 retrievedDocuments,
@@ -308,11 +327,19 @@ export class DoctorGPTWorkflow {
 
             // Prepare context for models
             const context = this.prepareModelContext(state);
+            console.log('Multi-model reasoning context:', context);
+            console.log('Retrieved documents:', state.retrievedDocuments);
 
             // Get responses from multiple models
+            const systemMessage = context
+                ? `You are a medical AI assistant. Provide accurate, evidence-based information.\n\nContext from uploaded documents:\n${context}`
+                : 'You are a medical AI assistant. Provide accurate, evidence-based information.';
+
+            console.log('System message for AI:', systemMessage);
+
             const multiModelResult = await modelRepository.multiModelReasoning(
                 [
-                    { role: 'system', content: 'You are a medical AI assistant. Provide accurate, evidence-based information.' },
+                    { role: 'system', content: systemMessage },
                     { role: 'user', content: state.userQuery }
                 ],
                 {
@@ -689,7 +716,8 @@ export class DoctorGPTWorkflow {
         if (state.retrievedDocuments?.length) {
             context += 'Retrieved documents:\n';
             state.retrievedDocuments.forEach((doc, i) => {
-                context += `${i + 1}. ${doc.content.substring(0, 200)}...\n`;
+                const content = doc.content || doc.payload?.content || 'No content available';
+                context += `${i + 1}. ${content.substring(0, 200)}...\n`;
             });
         }
 

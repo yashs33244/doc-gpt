@@ -1,0 +1,1 @@
+Patient: Jane Doe\nSymptoms: Headache, fever, fatigue\nTemperature: 101.2°F\nDiagnosis: Viral infection\nTreatment: Rest, fluids, acetaminophen

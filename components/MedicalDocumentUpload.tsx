@@ -15,7 +15,17 @@ interface UploadedDocument {
   processingStatus: string;
 }
 
-export function MedicalDocumentUpload() {
+interface MedicalDocumentUploadProps {
+  sessionId?: string;
+  userId?: string;
+  onDocumentUploaded?: (doc: UploadedDocument) => void;
+}
+
+export function MedicalDocumentUpload({ 
+  sessionId = 'session-' + Date.now(), 
+  userId = 'user-' + Date.now(),
+  onDocumentUploaded 
+}: MedicalDocumentUploadProps) {
   const [isLoading, setIsLoading] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [reportType, setReportType] = useState("other");
@@ -62,8 +72,8 @@ export function MedicalDocumentUpload() {
       const formData = new FormData();
       formData.append('file', selectedFile);
       formData.append('reportType', reportType);
-      formData.append('userId', 'user-' + Date.now());
-      formData.append('sessionId', 'session-' + Date.now());
+      formData.append('userId', userId);
+      formData.append('sessionId', sessionId);
       
       const response = await fetch("/api/upload/medical-documents", {
         method: "POST",
@@ -74,7 +84,9 @@ export function MedicalDocumentUpload() {
         const result = await response.json();
         if (result.success) {
           toast.success("Document uploaded and processed successfully!");
-          setUploadedDocuments(prev => [...prev, result.document]);
+          const newDoc = result.document;
+          setUploadedDocuments(prev => [...prev, newDoc]);
+          onDocumentUploaded?.(newDoc);
           setSelectedFile(null);
           
           // Reset file input

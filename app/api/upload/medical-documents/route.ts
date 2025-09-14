@@ -341,12 +341,17 @@ async function extractTextFromFile(file: File, fileType: string): Promise<{ extr
 }
 
 /**
- * Extract text from PDF (placeholder implementation)
+ * Extract text from PDF using pdf-parse library
  */
 async function extractTextFromPDF(buffer: Uint8Array): Promise<string> {
-    // Placeholder implementation
-    // In production, use pdf-parse or similar library
-    return '[PDF text extraction would be implemented here with pdf-parse library]';
+    try {
+        const pdfParse = require('pdf-parse');
+        const data = await pdfParse(buffer);
+        return data.text || 'No text content found in PDF';
+    } catch (error) {
+        console.error('PDF extraction error:', error);
+        return 'Error extracting text from PDF';
+    }
 }
 
 /**

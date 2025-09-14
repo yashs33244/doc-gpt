@@ -44,6 +44,11 @@ export interface MedicalQueryRequest {
     useGlobalKnowledge?: boolean;
     useSessionDocuments?: boolean;
     medicalContext?: MedicalContext;
+    uploadedDocuments?: Array<{
+        id: string;
+        fileName: string;
+        content: string;
+    }>;
 }
 
 export interface MedicalQueryResponse {
@@ -297,6 +302,7 @@ export class MedicalDataService {
             // Search session-specific documents (if enabled)
             let sessionMatches: SearchResult[] = [];
             if (request.useSessionDocuments !== false) {
+                // First, search existing indexed documents
                 sessionMatches = await this.qdrant.searchFiles(
                     queryEmbedding,
                     request.sessionId,
@@ -305,6 +311,20 @@ export class MedicalDataService {
                         scoreThreshold: 0.7
                     }
                 );
+
+                // Also search through uploaded documents directly if provided
+                if (request.uploadedDocuments && request.uploadedDocuments.length > 0) {
+                    console.log(`Searching through ${request.uploadedDocuments.length} uploaded documents`);
+
+                    const uploadedMatches = await this.searchUploadedDocuments(
+                        request.query,
+                        request.uploadedDocuments,
+                        queryEmbedding
+                    );
+
+                    // Combine with existing session matches
+                    sessionMatches = [...sessionMatches, ...uploadedMatches];
+                }
             }
 
             // Generate combined response using AI
@@ -492,6 +512,78 @@ export class MedicalDataService {
 
         // Remove duplicates and limit to 10 tags
         return [...new Set(foundTerms)].slice(0, 10);
+    }
+
+    /**
+     * Search through uploaded documents for relevant content
+     */
+    private async searchUploadedDocuments(
+        query: string,
+        uploadedDocuments: Array<{ id: string, fileName: string, content: string }>,
+        queryEmbedding: number[]
+    ): Promise<SearchResult[]> {
+        const results: SearchResult[] = [];
+
+        try {
+            for (const doc of uploadedDocuments) {
+                // Simple text search for now - could be enhanced with embeddings
+                const content = (doc.content || '').toLowerCase();
+                const queryLower = query.toLowerCase();
+
+                // Check if query terms appear in document
+                const queryTerms = queryLower.split(' ').filter(term => term.length > 2);
+                let matchCount = 0;
+                let contextSnippets: string[] = [];
+
+                for (const term of queryTerms) {
+                    if (content.includes(term)) {
+                        matchCount++;
+
+                        // Extract context around the match
+                        const termIndex = content.indexOf(term);
+                        const start = Math.max(0, termIndex - 100);
+                        const end = Math.min(content.length, termIndex + 100);
+                        const snippet = (doc.content || '').substring(start, end);
+                        contextSnippets.push(`...${snippet}...`);
+                    }
+                }
+
+                // Calculate simple relevance score
+                const relevanceScore = matchCount / queryTerms.length;
+
+                if (relevanceScore > 0.3) { // At least 30% of terms match
+                    results.push({
+                        id: doc.id,
+                        score: relevanceScore,
+                        payload: {
+                            content: contextSnippets.join('\n\n'),
+                            title: doc.fileName,
+                            type: 'document' as const,
+                            metadata: {
+                                source: 'uploaded_document',
+                                fileName: doc.fileName,
+                                documentId: doc.id,
+                                matchedTerms: matchCount,
+                                totalTerms: queryTerms.length,
+                                isUploadedDocument: true
+                            },
+                            createdAt: new Date().toISOString(),
+                            updatedAt: new Date().toISOString()
+                        }
+                    });
+                }
+            }
+
+            // Sort by relevance score
+            results.sort((a, b) => b.score - a.score);
+
+            console.log(`Found ${results.length} relevant matches in uploaded documents`);
+            return results.slice(0, 3); // Return top 3 matches
+
+        } catch (error) {
+            console.error('Error searching uploaded documents:', error);
+            return [];
+        }
     }
 
     private detectMedicalCategory(query: string): string | undefined {

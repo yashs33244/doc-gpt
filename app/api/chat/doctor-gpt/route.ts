@@ -33,6 +33,7 @@ interface ChatRequest {
         fileName: string;
         content: string;
     }>;
+    show_intermediate_steps?: boolean;
     options?: {
         enableMultiModel?: boolean;
         enableWebSearch?: boolean;
@@ -60,6 +61,8 @@ interface ChatResponse {
         modelProviders: string[];
         responseTime: number;
         workflowExecuted: boolean;
+        hasUploadedDocuments?: boolean;
+        documentsUsed?: string[];
     };
 }
 
@@ -68,7 +71,7 @@ export async function POST(req: NextRequest) {
 
     try {
         const body = await req.json() as ChatRequest;
-        const { messages, userId, sessionId, medicalContext, uploadedDocuments, options } = body;
+        const { messages, userId, sessionId, medicalContext, uploadedDocuments, show_intermediate_steps, options } = body;
 
         // Validate required fields
         if (!messages || messages.length === 0) {
@@ -91,10 +94,11 @@ export async function POST(req: NextRequest) {
         const actualSessionId = sessionId || crypto.randomUUID();
         const chatId = crypto.randomUUID();
 
-        // Check if this is a medical query
+        // Check if this is a medical query or if there are uploaded documents
         const isMedicalQuery = await isMedicalRelated(currentMessage.content);
+        const hasUploadedDocuments = uploadedDocuments && uploadedDocuments.length > 0;
 
-        if (!isMedicalQuery) {
+        if (!isMedicalQuery && !hasUploadedDocuments) {
             // Handle non-medical queries with simple model response
             return handleNonMedicalQuery(currentMessage.content, actualUserId, actualSessionId, chatId);
         }
@@ -125,14 +129,17 @@ export async function POST(req: NextRequest) {
         // Create chat record first to ensure chatId exists for cost tracking
         await createInitialChatRecord(actualUserId, actualSessionId, chatId, currentMessage.content);
 
-        // Query medical knowledge using dual RAG
+        // Query medical knowledge using dual RAG with uploaded documents
+        console.log(`Querying medical knowledge with ${uploadedDocuments?.length || 0} uploaded documents`);
+
         const medicalQuery = await medicalService.queryMedicalKnowledge({
             query: currentMessage.content,
             userId: actualUserId,
             sessionId: actualSessionId,
             useGlobalKnowledge: true,
             useSessionDocuments: uploadedDocuments && uploadedDocuments.length > 0,
-            medicalContext: medicalContext
+            medicalContext: medicalContext,
+            uploadedDocuments: uploadedDocuments // Pass the actual documents
         });
 
         // Execute the workflow with medical context
@@ -144,13 +151,17 @@ export async function POST(req: NextRequest) {
         // Update chat record with final response
         await updateChatWithResponse(actualUserId, actualSessionId, chatId, result);
 
-        // Prepare response
+        // Prepare response with improved content handling
+        const responseContent = result.finalResponse?.content ||
+            result.modelResponses?.[0]?.response?.content ||
+            'I apologize, but I encountered an issue processing your request. Please try again or rephrase your question.';
+
         const response: ChatResponse = {
-            response: result.finalResponse?.content || 'I apologize, but I encountered an issue processing your request.',
+            response: responseContent,
             citations: result.citations || [],
             confidence: result.confidence || 0.5,
             medicalDisclaimer: result.finalResponse?.medicalDisclaimer ||
-                "This information is for educational purposes only and is not a substitute for professional medical advice.",
+                "⚠️ This information is for educational purposes only and is not a substitute for professional medical advice.",
             cost: {
                 totalCost: result.metadata?.totalWorkflowCost || 0,
                 breakdown: {
@@ -162,9 +173,27 @@ export async function POST(req: NextRequest) {
             metadata: {
                 modelProviders: result.modelResponses?.map(r => r.provider) || [],
                 responseTime: Date.now() - startTime,
-                workflowExecuted: true
+                workflowExecuted: true,
+                hasUploadedDocuments: (uploadedDocuments?.length || 0) > 0,
+                documentsUsed: uploadedDocuments?.map(doc => doc.fileName) || []
             }
         };
+
+        // Handle intermediate steps response format
+        if (show_intermediate_steps) {
+            // Return messages array format for intermediate steps
+            const responseMessages = [
+                ...messages, // Include original messages
+                {
+                    id: 'assistant-response',
+                    role: 'assistant' as const,
+                    content: response.response,
+                    tool_calls: undefined
+                }
+            ];
+            
+            return NextResponse.json({ messages: responseMessages });
+        }
 
         // For streaming support, we'll return the complete response
         // In production, this could be enhanced to stream chunks
@@ -309,7 +338,10 @@ async function isMedicalRelated(query: string): Promise<boolean> {
         'diabetes', 'cancer', 'covid', 'flu', 'infection',
         'allergy', 'allergic', 'reaction', 'side effect',
         'test', 'lab', 'laboratory', 'x-ray', 'scan', 'mri', 'ct',
-        'vaccine', 'vaccination', 'immunization'
+        'vaccine', 'vaccination', 'immunization',
+        // Document analysis keywords
+        'document', 'pdf', 'report', 'uploaded', 'file', 'analyze', 'analysis',
+        'information', 'content', 'data', 'results', 'findings'
     ];
 
     const lowerQuery = query.toLowerCase();
@@ -380,31 +412,64 @@ async function updateChatWithResponse(
     workflowResult: DoctorGPTState
 ): Promise<void> {
     try {
-        // Save assistant response
-        if (workflowResult.finalResponse) {
+        // Save assistant response - ensure we have content
+        const responseContent = workflowResult.finalResponse?.content ||
+            workflowResult.modelResponses?.[0]?.response?.content ||
+            'I apologize, but I encountered an issue processing your request. Please try again.';
+
+        if (responseContent) {
             await prisma.chat.create({
                 data: {
                     id: chatId + '-assistant',
                     sessionId,
                     userId,
                     role: 'ASSISTANT',
-                    content: workflowResult.finalResponse.content,
+                    content: responseContent,
                     isHealthcareQuery: true,
-                    citations: workflowResult.citations ? JSON.stringify(workflowResult.citations) : undefined,
-                    confidence: workflowResult.confidence,
+                    citations: workflowResult.citations ? JSON.stringify(workflowResult.citations) : '[]',
+                    confidence: workflowResult.confidence || 0.5,
                     metadata: {
                         modelProviders: workflowResult.modelResponses?.map(r => r.provider) || [],
                         totalCost: workflowResult.metadata?.totalWorkflowCost || 0,
                         workflowExecuted: true,
                         responseTime: workflowResult.metadata?.executionTime || 0,
                         citationCount: workflowResult.citations?.length || 0,
-                        timestamp: new Date().toISOString()
+                        timestamp: new Date().toISOString(),
+                        hasUploadedDocuments: (workflowResult.uploadedDocuments?.length || 0) > 0,
+                        workflowState: workflowResult.currentNode || 'completed'
                     }
                 }
             });
+
+            console.log('Successfully saved assistant response to database');
+        } else {
+            console.warn('No content available to save from workflow result');
         }
     } catch (error) {
         console.error('Failed to update chat with response:', error);
+
+        // Try to save a fallback response to prevent data loss
+        try {
+            await prisma.chat.create({
+                data: {
+                    id: chatId + '-assistant-fallback',
+                    sessionId,
+                    userId,
+                    role: 'ASSISTANT',
+                    content: 'I apologize, but I encountered a technical issue while processing your request. Please try asking your question again.',
+                    isHealthcareQuery: true,
+                    citations: '[]',
+                    confidence: 0.1,
+                    metadata: {
+                        error: 'Failed to process workflow result',
+                        timestamp: new Date().toISOString(),
+                        fallbackResponse: true
+                    }
+                }
+            });
+        } catch (fallbackError) {
+            console.error('Failed to save fallback response:', fallbackError);
+        }
     }
 }
 
