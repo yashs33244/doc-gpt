@@ -1,0 +1,150 @@
+# Docker Compose configuration for Doctor GPT
+# Separate PostgreSQL for relational data and Qdrant for vector operations
+
+services:
+  # PostgreSQL 16 for relational data (sessions, users, logs, etc.)
+  postgres:
+    image: postgres:16-alpine
+    container_name: doctor-gpt-postgres
+    environment:
+      POSTGRES_USER: ${DB_USER:-doctor_gpt}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-doctor_gpt_password}
+      POSTGRES_DB: ${DB_NAME:-doctor_gpt}
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d
+      - ./docker/postgres/conf/postgresql.conf:/etc/postgresql/postgresql.conf
+    command: >
+      postgres 
+      -c max_connections=200
+      -c shared_buffers=256MB
+      -c effective_cache_size=1GB
+      -c maintenance_work_mem=64MB
+      -c checkpoint_completion_target=0.9
+      -c wal_buffers=16MB
+      -c default_statistics_target=100
+      -c random_page_cost=1.1
+      -c effective_io_concurrency=200
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-doctor_gpt} -d ${DB_NAME:-doctor_gpt}"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - doctor-gpt-network
+
+  # Qdrant Vector Database for embeddings and semantic search
+  qdrant:
+    image: qdrant/qdrant:v1.7.4
+    container_name: doctor-gpt-qdrant
+    environment:
+      QDRANT__SERVICE__HTTP_PORT: 6333
+      QDRANT__SERVICE__GRPC_PORT: 6334
+    ports:
+      - "${QDRANT_HTTP_PORT:-6333}:6333"
+      - "${QDRANT_GRPC_PORT:-6334}:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - doctor-gpt-network
+
+  # Redis for caching and session storage (optional but recommended)
+  redis:
+    image: redis:7-alpine
+    container_name: doctor-gpt-redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+      - ./docker/redis/redis.conf:/usr/local/etc/redis/redis.conf
+    command: redis-server /usr/local/etc/redis/redis.conf
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - doctor-gpt-network
+
+  # pgAdmin for database management (development only)
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: doctor-gpt-pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@doctorgpt.local}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin}
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+    ports:
+      - "${PGADMIN_PORT:-5050}:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+      - ./docker/pgadmin/servers.json:/pgadmin4/servers.json
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - doctor-gpt-network
+    profiles:
+      - dev
+
+  # Minio for local S3-compatible object storage (for file uploads)
+  minio:
+    image: minio/minio:latest
+    container_name: doctor-gpt-minio
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    ports:
+      - "${MINIO_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - doctor-gpt-network
+    profiles:
+      - dev
+
+# Named volumes for data persistence
+volumes:
+  postgres_data:
+    driver: local
+    name: doctor-gpt-postgres-data
+  qdrant_data:
+    driver: local
+    name: doctor-gpt-qdrant-data
+  redis_data:
+    driver: local
+    name: doctor-gpt-redis-data
+  pgadmin_data:
+    driver: local
+    name: doctor-gpt-pgadmin-data
+  minio_data:
+    driver: local
+    name: doctor-gpt-minio-data
+
+# Custom network for service communication
+networks:
+  doctor-gpt-network:
+    driver: bridge
+    name: doctor-gpt-network
