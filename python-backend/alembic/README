@@ -1,0 +1,55 @@
+Doctor GPT Backend Database Migrations
+
+This directory contains Alembic migrations for the Doctor GPT backend database.
+
+## Usage
+
+### Initialize (if not already done)
+```bash
+alembic init alembic
+```
+
+### Create a new migration
+```bash
+alembic revision --autogenerate -m "Description of changes"
+```
+
+### Apply migrations
+```bash
+# Upgrade to latest
+alembic upgrade head
+
+# Upgrade to specific revision
+alembic upgrade <revision_id>
+
+# Downgrade to previous revision
+alembic downgrade -1
+
+# Downgrade to specific revision
+alembic downgrade <revision_id>
+```
+
+### View migration history
+```bash
+alembic history --verbose
+alembic current
+alembic show <revision_id>
+```
+
+## Environment Variables
+
+The migrations use the DATABASE_URL environment variable or fall back to the application settings.
+
+For local development, ensure your .env file contains:
+```
+DATABASE_URL="postgresql://doctor_gpt:doctor_gpt_password@localhost:5432/doctor_gpt"
+```
+
+## Migration Best Practices
+
+1. Always review auto-generated migrations before applying them
+2. Test migrations on a copy of production data
+3. Create separate migrations for data changes and schema changes
+4. Use meaningful migration messages
+5. Never edit existing migration files after they've been applied to production
+

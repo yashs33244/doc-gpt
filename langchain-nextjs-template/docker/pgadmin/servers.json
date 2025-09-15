@@ -1,0 +1,15 @@
+{
+    "Servers": {
+        "1": {
+            "Name": "Doctor GPT Database",
+            "Group": "Development",
+            "Host": "postgres",
+            "Port": 5432,
+            "MaintenanceDB": "doctor_gpt",
+            "Username": "doctor_gpt",
+            "Password": "doctor_gpt_password",
+            "SSLMode": "prefer",
+            "Comment": "Local development database for Doctor GPT application"
+        }
+    }
+}

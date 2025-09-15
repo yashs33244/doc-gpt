@@ -1,0 +1,21 @@
+name: doctor-gpt-backend
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - postgresql
+  - redis
+  - tesseract
+  - poppler
+  - imagemagick
+  - git
+  - curl
+  - pip:
+    - poetry>=1.6.0
+
+# After creating the environment, run:
+# conda activate doctor-gpt-backend
+# poetry install
+
